@@ -1,0 +1,94 @@
+import csv
+import sqlite3
+
+# ---------- DBMS setup ----------
+conn = sqlite3.connect("agri_prices.db")
+cur = conn.cursor()
+cur.execute("DROP TABLE IF EXISTS prices")
+cur.execute("""CREATE TABLE prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    crop TEXT, market TEXT, date TEXT, price REAL)""")
+
+# ---------- Read CSV and store valid records ----------
+loaded, skipped = 0, 0
+with open("market_prices.csv", "r") as f:
+    for r in csv.DictReader(f):
+        try:
+            price = float(r["Price"])
+            if price <= 0:
+                raise ValueError
+            cur.execute("INSERT INTO prices (crop, market, date, price) VALUES (?,?,?,?)",
+                        (r["Crop"].strip(), r["Market"].strip(), r["Date"].strip(), price))
+            loaded += 1
+        except (ValueError, KeyError):
+            skipped += 1
+conn.commit()
+
+if loaded == 0:
+    print("No valid data found!")
+else:
+    # ---------- Helper functions ----------
+    def latest_price(crop, market):
+        cur.execute("SELECT price FROM prices WHERE crop=? AND market=? "
+                    "ORDER BY date DESC LIMIT 1", (crop, market))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    def compare(crop, m1, m2, qty):
+        p1, p2 = latest_price(crop, m1), latest_price(crop, m2)
+        if p1 is None or p2 is None:
+            print("Price not available for this crop/market.")
+            return
+        high = m1 if p1 > p2 else m2
+        diff = abs(p1 - p2)
+        print("Crop:", crop)
+        print(m1, "Price: Rs", p1, "/quintal")
+        print(m2, "Price: Rs", p2, "/quintal")
+        print("Higher Price Market:", high if diff else "Both equal")
+        print("Price Difference: Rs", diff, "/quintal")
+        print("Difference for", qty, "quintals: Rs", diff * qty)
+
+    def history(crop, market):
+        cur.execute("SELECT date, price FROM prices WHERE crop=? AND market=? "
+                    "ORDER BY date", (crop, market))
+        return cur.fetchall()
+
+    crops = [r[0] for r in cur.execute("SELECT DISTINCT crop FROM prices ORDER BY crop")]
+    markets = [r[0] for r in cur.execute("SELECT DISTINCT market FROM prices ORDER BY market")]
+
+    print("\n--- AGRICULTURAL MARKET PRICE COMPARISON ---")
+    print("Records stored:", loaded, "| Invalid records skipped:", skipped)
+    print("Crops:", len(crops), "| Markets:", len(markets))
+
+    # 1. Search + compare (sample case)
+    print("\n[1] Price Comparison")
+    compare("Tomato", "Market A", "Market B", 10)
+
+    # 2. Crop-wise report using dictionaries
+    print("\n[2] Crop-wise Report (latest prices, Rs/quintal)")
+    best_count = {m: 0 for m in markets}
+    for crop in crops:
+        prices = {m: latest_price(crop, m) for m in markets}
+        prices = {m: p for m, p in prices.items() if p is not None}
+        hi = max(prices, key=prices.get)
+        lo = min(prices, key=prices.get)
+        best_count[hi] += 1
+        print(f"{crop:7s}", prices,
+              "| Highest:", hi, "| Lowest:", lo,
+              "| Max difference:", prices[hi] - prices[lo])
+
+    # 3. Markets offering higher prices
+    print("\n[3] Markets Offering Highest Price (number of crops)")
+    for m, c in sorted(best_count.items(), key=lambda x: -x[1]):
+        print(m, ":", c)
+
+    # 4. Price trends
+    print("\n[4] Price Trend (first to latest record)")
+    for crop in crops:
+        for m in markets:
+            h = history(crop, m)
+            first, last = h[0][1], h[-1][1]
+            change = (last - first) / first * 100
+            trend = "Rising" if change > 0 else "Falling" if change < 0 else "Stable"
+            print(f"{crop:7s} {m}: {first:.0f} -> {last:.0f} ({change:+.1f}%) {trend}")
+conn.close()
